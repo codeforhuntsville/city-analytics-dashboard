@@ -4,12 +4,30 @@ require 'json'
 require 'rack-cache'
 require 'net/http'
 require 'net/https'
+require 'active_support/all'
 require 'active_support/core_ext/hash'
 require 'active_support/core_ext/object'
+require 'googleauth'
+require 'google/api_client'
 
 use Rack::Cache
 set :public_folder, 'public'
 set :bind, '0.0.0.0'
+use Rack::Logger
+
+def api_client; settings.api_client; end
+
+def logger; settings.logger end
+
+def analytics; settings.analytics; end
+
+def authorization; settings.authorization; end
+
+helpers do
+  def logger
+    request.logger
+  end
+end
 
 if ENV['USERNAME'] && ENV['PASSWORD']
   use Rack::Auth::Basic, 'Demo area' do |user, pass|
@@ -19,31 +37,27 @@ end
 
 get '/' do
   html = File.read(File.join('public', 'index.html'))
-  html.sub!('$PROFILE_ID', JSON.dump(ENV['GA_VIEW_ID']))
+  html.sub!('$PROFILE_ID', JSON.dump(ENV['PROFILE_ID']))
   html.sub!('$DOMAIN_URL', JSON.dump(ENV['GA_WEBSITE_URL']))
   return html
 end
 
 get '/realtime' do
-  cache_control :public, :max_age => 20
-  query = { :access_token => get_token }.merge(params)
-
-  http = Net::HTTP.new('www.googleapis.com', 443)
-  http.use_ssl = true
-  req = Net::HTTP::Get.new("/analytics/v3alpha/data/realtime?#{query.to_param}")
-  response = http.request(req)
-  response.body
+  logger.info(params)
+  parameters = { 'ids' => "ga:108779703" }.merge(params)
+  result = api_client.execute(:api_method => analytics.data.realtime.get, :parameters => parameters)
+  logger.info("Return from /realtime:")
+  logger.info(result.body)
+  result.body
 end
 
 get '/historic' do
-  cache_control :public, :max_age => 20
-  query = { :access_token => get_token }.merge(params)
-
-  http = Net::HTTP.new('www.googleapis.com', 443)
-  http.use_ssl = true
-  req = Net::HTTP::Get.new("/analytics/v3/data/ga?#{query.to_param}")
-  response = http.request(req)
-  response.body
+  #parameters = { 'ids' => "ga:108779703" }.merge(params)
+  parameters = params
+  result = api_client.execute(:api_method => analytics.data.ga.get, :parameters => parameters)
+  logger.info("Return from /historic:")
+  logger.info(result.body)
+  result.body
 end
 
 get '/feed' do
@@ -58,27 +72,17 @@ get '/setup' do
   File.read(File.join('public', 'setup.html'))
 end
 
-def get_token
-  if @token.nil? || @token_timeout < Time.now
-    params = {
-      'client_id' => ENV['CLIENT_ID'],
-      'client_secret' => ENV['CLIENT_SECRET'],
-      'refresh_token' => ENV['REFRESH_TOKEN'],
-      'grant_type' => 'refresh_token'
-    }
-    http = Net::HTTP.new('accounts.google.com', 443)
-    http.use_ssl = true
-    req = Net::HTTP::Post.new('/o/oauth2/token')
-    req.form_data = params
-    response = http.request(req)
-    data = JSON.parse(response.body)
-    @token_timeout = Time.now + data["expires_in"]
-    @token = data["access_token"]
-  end
-  @token
-end
-
 configure do
-    set :protection, except: [:frame_options]
-end
+  set :protection, except: [:frame_options]
+  client = Google::APIClient.new(:application_name => 'City Analytics Dashboard', :application_version => '1')
+  scopes =  ['https://www.googleapis.com/auth/analytics.readonly']
+  set :authorization, Google::Auth.get_application_default(scopes)
 
+  client.authorization = authorization
+  client.authorization.access_token = '123'
+
+  set :analytics, client.discovered_api('analytics', 'v3')
+
+  set :api_client, client
+
+end
